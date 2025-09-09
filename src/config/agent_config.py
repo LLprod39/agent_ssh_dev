@@ -93,6 +93,7 @@ class LLMConfig(BaseModel):
     max_tokens: int = Field(default=4000, ge=1, le=8000, description="Максимальное количество токенов")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Температура по умолчанию")
     timeout: int = Field(default=60, ge=1, le=300, description="Таймаут запроса в секундах")
+    provider: str = Field(default="openai", description="Провайдер LLM (openai, gemini)")
     
     @field_validator('api_key')
     @classmethod

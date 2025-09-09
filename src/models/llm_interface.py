@@ -13,6 +13,13 @@ from datetime import datetime
 from ..config.agent_config import LLMConfig
 from ..utils.logger import StructuredLogger
 
+# Импорт для Google Gemini
+try:
+    from google import genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
 
 @dataclass
 class LLMRequest:
@@ -251,6 +258,191 @@ class OpenAIInterface(LLMInterface):
         return "Контекст:\n" + "\n".join(context_parts)
 
 
+class GeminiInterface(LLMInterface):
+    """Интерфейс для работы с Google Gemini API"""
+    
+    def __init__(self, config: LLMConfig, logger: Optional[StructuredLogger] = None):
+        """
+        Инициализация интерфейса Gemini
+        
+        Args:
+            config: Конфигурация LLM
+            logger: Логгер
+        """
+        if not GEMINI_AVAILABLE:
+            raise ImportError("google-generativeai не установлен. Установите: pip install google-generativeai")
+        
+        self.config = config
+        self.logger = logger or StructuredLogger("GeminiInterface")
+        self.api_key = config.api_key
+        self.timeout = config.timeout
+        
+        # Настройка Gemini клиента
+        import os
+        os.environ['GEMINI_API_KEY'] = self.api_key
+        self.client = genai.Client(api_key=self.api_key)
+        
+        # Проверяем доступность API
+        if not self.is_available():
+            self.logger.warning("Gemini API недоступен")
+    
+    def generate_response(self, request: LLMRequest) -> LLMResponse:
+        """
+        Генерация ответа от Gemini
+        
+        Args:
+            request: Запрос к LLM
+            
+        Returns:
+            Ответ от LLM
+        """
+        start_time = time.time()
+        
+        try:
+            # Подготавливаем промт
+            full_prompt = self._build_prompt(request)
+            
+            self.logger.debug(
+                "Отправка запроса к Gemini",
+                model=request.model,
+                prompt_length=len(full_prompt),
+                temperature=request.temperature,
+                max_tokens=request.max_tokens
+            )
+            
+            # Выполняем запрос через новый API
+            response = self.client.models.generate_content(
+                model=request.model,
+                contents=full_prompt,
+                config={
+                    "temperature": request.temperature,
+                    "max_output_tokens": request.max_tokens,
+                }
+            )
+            
+            duration = time.time() - start_time
+            
+            if response.text:
+                self.logger.info(
+                    "Успешный ответ от Gemini",
+                    model=request.model,
+                    response_length=len(response.text),
+                    duration=duration
+                )
+                
+                return LLMResponse(
+                    success=True,
+                    content=response.text,
+                    usage=self._extract_usage(response),
+                    model=request.model,
+                    duration=duration,
+                    metadata=request.metadata
+                )
+            else:
+                error_msg = "Пустой ответ от Gemini"
+                
+                self.logger.error(
+                    "Ошибка запроса к Gemini",
+                    error=error_msg,
+                    duration=duration
+                )
+                
+                return LLMResponse(
+                    success=False,
+                    error=error_msg,
+                    duration=duration,
+                    metadata=request.metadata
+                )
+                
+        except Exception as e:
+            duration = time.time() - start_time
+            error_msg = f"Ошибка при запросе к Gemini: {str(e)}"
+            self.logger.error("Ошибка при запросе к Gemini", error=error_msg, duration=duration)
+            
+            return LLMResponse(
+                success=False,
+                error=error_msg,
+                duration=duration,
+                metadata=request.metadata
+            )
+    
+    def is_available(self) -> bool:
+        """Проверка доступности Gemini API"""
+        try:
+            if not GEMINI_AVAILABLE:
+                return False
+            
+            # Простая проверка доступности через новый API
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents="test",
+                config={"max_output_tokens": 1}
+            )
+            return response.text is not None
+            
+        except Exception as e:
+            self.logger.debug(f"Gemini API недоступен: {e}")
+            return False
+    
+    def _build_prompt(self, request: LLMRequest) -> str:
+        """Построение полного промта для Gemini"""
+        prompt_parts = []
+        
+        # Добавляем системное сообщение
+        if request.system_message:
+            prompt_parts.append(f"Система: {request.system_message}")
+        
+        # Добавляем контекст
+        if request.context:
+            context_message = self._format_context(request.context)
+            prompt_parts.append(f"Контекст: {context_message}")
+        
+        # Добавляем основной промт
+        prompt_parts.append(f"Запрос: {request.prompt}")
+        
+        return "\n\n".join(prompt_parts)
+    
+    def _format_context(self, context: Dict[str, Any]) -> str:
+        """Форматирование контекста для Gemini"""
+        if not context:
+            return ""
+        
+        context_parts = []
+        for key, value in context.items():
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False, indent=2)
+            context_parts.append(f"{key}: {value}")
+        
+        return "\n".join(context_parts)
+    
+    def _extract_usage(self, response) -> Dict[str, Any]:
+        """Извлечение информации об использовании токенов"""
+        usage = {
+            "total_tokens": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0
+        }
+        
+        # Новый API может предоставлять информацию об использовании токенов
+        if hasattr(response, 'usage_metadata'):
+            usage_metadata = response.usage_metadata
+            usage.update({
+                "total_tokens": getattr(usage_metadata, 'total_token_count', 0),
+                "prompt_tokens": getattr(usage_metadata, 'prompt_token_count', 0),
+                "completion_tokens": getattr(usage_metadata, 'candidates_token_count', 0)
+            })
+        elif hasattr(response, 'usage'):
+            # Альтернативный способ получения информации об использовании
+            usage_data = response.usage
+            usage.update({
+                "total_tokens": getattr(usage_data, 'total_tokens', 0),
+                "prompt_tokens": getattr(usage_data, 'prompt_tokens', 0),
+                "completion_tokens": getattr(usage_data, 'completion_tokens', 0)
+            })
+        
+        return usage
+
+
 class MockLLMInterface(LLMInterface):
     """Мок-интерфейс для тестирования"""
     
@@ -376,8 +568,17 @@ class LLMInterfaceFactory:
         if mock_mode:
             return MockLLMInterface(logger)
         
-        # Определяем тип интерфейса по базовому URL
-        if "openai" in config.base_url.lower() or "api.openai.com" in config.base_url:
+        # Определяем тип интерфейса по провайдеру
+        provider = getattr(config, 'provider', 'openai').lower()
+        
+        if provider == "gemini":
+            if GEMINI_AVAILABLE:
+                return GeminiInterface(config, logger)
+            else:
+                if logger:
+                    logger.warning("Gemini недоступен, используется OpenAI-совместимый интерфейс")
+                return OpenAIInterface(config, logger)
+        elif provider == "openai" or "openai" in config.base_url.lower() or "api.openai.com" in config.base_url:
             return OpenAIInterface(config, logger)
         else:
             # По умолчанию используем OpenAI-совместимый интерфейс

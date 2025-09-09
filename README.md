@@ -12,6 +12,7 @@
 - 🔄 **Идемпотентность** - безопасное повторное выполнение задач с проверками состояния
 - 📸 **Снимки состояния** - создание и восстановление состояний системы
 - ⏪ **Система отката** - автоматический откат изменений при ошибках
+- 🧠 **Поддержка множественных LLM** - OpenAI GPT, Google Gemini, Anthropic Claude
 
 ## Архитектура
 
@@ -60,7 +61,7 @@ pip install -r requirements.txt
 npm install
 
 # 5. Инициализируйте конфигурацию
-python -m src.main init
+python ssh-agent init
 ```
 
 ### Установка зависимостей
@@ -86,7 +87,34 @@ cp config/agent_config.yaml.example config/agent_config.yaml
 
 ## Использование
 
-### Базовое использование
+### CLI Интерфейс
+
+SSH Agent предоставляет мощный командный интерфейс для удобной работы:
+
+```bash
+# Инициализация конфигурации
+ssh-agent init
+
+# Выполнение задачи
+ssh-agent execute "Установить nginx на сервере"
+
+# Предварительный просмотр (dry-run)
+ssh-agent execute "Настроить SSL сертификат" --dry-run
+
+# Интерактивный режим
+ssh-agent interactive
+
+# Показ статуса
+ssh-agent status
+
+# Показ истории выполнения
+ssh-agent history
+
+# Управление конфигурацией
+ssh-agent config validate
+```
+
+### Базовое использование (Python API)
 ```python
 from agent_ssh_dev import SSHAgent
 
@@ -113,6 +141,51 @@ ssh-agent execute "Настроить SSL" --dry-run
 # Интерактивный режим
 ssh-agent interactive
 ```
+
+## Провайдеры LLM
+
+SSH Agent поддерживает несколько провайдеров LLM:
+
+### OpenAI GPT
+```yaml
+llm:
+  provider: "openai"
+  api_key: "sk-..."
+  model: "gpt-4"
+  base_url: "https://api.openai.com/v1"
+```
+
+### Google Gemini
+```yaml
+llm:
+  provider: "gemini"
+  api_key: "AI..."
+  model: "gemini-pro"
+  base_url: "https://generativelanguage.googleapis.com/v1beta"
+```
+
+### Настройка провайдера
+
+1. **Установите зависимости**:
+   ```bash
+   # Для OpenAI
+   pip install openai>=1.0.0
+   
+   # Для Gemini
+   pip install google-generativeai>=0.3.0
+   
+   # Для Anthropic
+   pip install anthropic>=0.7.0
+   ```
+
+2. **Настройте конфигурацию** в `config/agent_config.yaml`
+
+3. **Получите API ключи**:
+   - OpenAI: [platform.openai.com](https://platform.openai.com/api-keys)
+   - Gemini: [makersuite.google.com](https://makersuite.google.com/app/apikey)
+   - Anthropic: [console.anthropic.com](https://console.anthropic.com/)
+
+Подробнее см. [Руководство по интеграции Gemini](docs/gemini_integration_guide.md)
 
 ## Конфигурация
 

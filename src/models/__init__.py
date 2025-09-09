@@ -22,6 +22,7 @@ from .llm_interface import (
     LLMRequest,
     LLMResponse,
     OpenAIInterface,
+    GeminiInterface,
     MockLLMInterface,
     LLMInterfaceFactory,
     LLMRequestBuilder
@@ -65,6 +66,7 @@ __all__ = [
     "LLMRequest",
     "LLMResponse", 
     "OpenAIInterface",
+    "GeminiInterface",
     "MockLLMInterface",
     "LLMInterfaceFactory",
     "LLMRequestBuilder",

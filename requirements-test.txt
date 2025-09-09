@@ -1,0 +1,61 @@
+# Зависимости для тестирования SSH Agent
+
+# Основные тестовые фреймворки
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-xdist>=3.3.0
+pytest-mock>=3.11.0
+pytest-html>=3.2.0
+pytest-benchmark>=4.0.0
+
+# Дополнительные инструменты тестирования
+coverage>=7.2.0
+pytest-cov>=4.1.0
+pytest-html>=3.2.0
+pytest-json-report>=1.5.0
+
+# Моки и фикстуры
+factory-boy>=3.2.0
+faker>=19.0.0
+responses>=0.23.0
+freezegun>=1.2.0
+
+# Тестирование производительности
+pytest-benchmark>=4.0.0
+memory-profiler>=0.60.0
+
+# Тестирование безопасности
+bandit>=1.7.0
+safety>=2.3.0
+
+# Линтеры и форматтеры
+black>=23.0.0
+isort>=5.12.0
+flake8>=6.0.0
+mypy>=1.4.0
+pylint>=2.17.0
+
+# Документация тестов
+pytest-sphinx>=0.3.0
+sphinx>=7.0.0
+sphinx-rtd-theme>=1.3.0
+
+# Отчеты и визуализация
+pytest-html>=3.2.0
+pytest-json-report>=1.5.0
+allure-pytest>=2.12.0
+
+# Параллельное выполнение
+pytest-xdist>=3.3.0
+
+# Тестирование API
+httpx>=0.24.0
+requests-mock>=1.11.0
+
+# Тестирование баз данных
+pytest-postgresql>=5.0.0
+pytest-mysql>=2.3.0
+
+# Тестирование файловой системы
+pytest-tmpfs>=0.0.1
