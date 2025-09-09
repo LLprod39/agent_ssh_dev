@@ -1,0 +1,37 @@
+{
+  "name": "agent-ssh-dev",
+  "version": "1.0.0",
+  "description": "SSH Agent with LLM integration for automated server task execution",
+  "main": "index.js",
+  "scripts": {
+    "taskmaster:init": "npx task-master-ai init --rules cursor,windsurf,vscode",
+    "taskmaster:parse": "npx task-master-ai parse-prd .taskmaster/docs/prd.txt",
+    "taskmaster:help": "npx task-master-ai --help",
+    "install:taskmaster": "npm install -g task-master-ai"
+  },
+  "keywords": [
+    "ssh",
+    "llm",
+    "automation",
+    "task-master",
+    "ai",
+    "devops"
+  ],
+  "author": "SSH Agent Team",
+  "license": "MIT",
+  "dependencies": {
+    "task-master-ai": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/agent-ssh-dev.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/agent-ssh-dev/issues"
+  },
+  "homepage": "https://github.com/your-org/agent-ssh-dev#readme"
+}
