@@ -18,6 +18,7 @@ from ..models.planning_model import TaskStep, StepStatus, Priority
 from ..models.llm_interface import LLMInterface, LLMRequest, LLMRequestBuilder, LLMInterfaceFactory
 from ..agents.task_master_integration import TaskMasterIntegration, TaskMasterResult
 from ..utils.logger import StructuredLogger
+from ..utils.idempotency_system import IdempotencySystem, IdempotencyCheck
 
 
 @dataclass
@@ -90,18 +91,27 @@ class SubtaskAgent:
     - Валидация и оптимизация подзадач
     """
     
-    def __init__(self, config: AgentConfig, task_master: Optional[TaskMasterIntegration] = None):
+    def __init__(self, config: AgentConfig, task_master: Optional[TaskMasterIntegration] = None, 
+                 ssh_connector=None):
         """
         Инициализация Subtask Agent
         
         Args:
             config: Конфигурация агентов
             task_master: Интеграция с Task Master
+            ssh_connector: SSH коннектор для системы идемпотентности
         """
         self.config = config
         self.subtask_agent_config = config.subtask_agent
         self.task_master = task_master
         self.logger = StructuredLogger("SubtaskAgent")
+        
+        # Инициализация системы идемпотентности
+        if ssh_connector:
+            idempotency_config = config.get("idempotency", {})
+            self.idempotency_system = IdempotencySystem(ssh_connector, idempotency_config)
+        else:
+            self.idempotency_system = None
         
         # Создаем интерфейс LLM
         self.llm_interface = LLMInterfaceFactory.create_interface(
@@ -463,10 +473,16 @@ class SubtaskAgent:
         # Добавляем общие проверки если нужно
         self._add_common_health_checks(subtasks, context)
         
+        # Улучшаем подзадачи идемпотентностью
+        if self.idempotency_system:
+            for i, subtask in enumerate(subtasks):
+                subtasks[i] = self.enhance_subtask_with_idempotency(subtask)
+        
         self.logger.debug(
             "Подзадачи оптимизированы",
             subtasks_count=len(subtasks),
-            total_commands=sum(len(subtask.commands) for subtask in subtasks)
+            total_commands=sum(len(subtask.commands) for subtask in subtasks),
+            idempotency_enabled=self.idempotency_system is not None
         )
     
     def _sort_subtasks_by_dependencies(self, subtasks: List[Subtask]):
@@ -573,4 +589,187 @@ class SubtaskAgent:
             ])
         
         return health_checks
+    
+    def generate_idempotent_commands(self, subtask: Subtask) -> List[str]:
+        """Генерация идемпотентных команд для подзадачи"""
+        if not self.idempotency_system:
+            return subtask.commands
+        
+        idempotent_commands = []
+        
+        for command in subtask.commands:
+            # Определяем тип команды и цель
+            command_type, target = self._analyze_command(command)
+            
+            if command_type and target:
+                # Генерируем идемпотентную команду
+                idempotent_cmd, checks = self.idempotency_system.generate_idempotent_command(
+                    command, command_type, target
+                )
+                idempotent_commands.append(idempotent_cmd)
+                
+                # Добавляем проверки идемпотентности в метаданные
+                if not hasattr(subtask, 'idempotency_checks'):
+                    subtask.idempotency_checks = []
+                subtask.idempotency_checks.extend(checks)
+            else:
+                # Если не можем определить тип, оставляем команду как есть
+                idempotent_commands.append(command)
+        
+        self.logger.info(
+            "Сгенерированы идемпотентные команды",
+            subtask_id=subtask.subtask_id,
+            original_commands=len(subtask.commands),
+            idempotent_commands=len(idempotent_commands)
+        )
+        
+        return idempotent_commands
+    
+    def _analyze_command(self, command: str) -> tuple:
+        """Анализ команды для определения типа и цели"""
+        command_lower = command.lower().strip()
+        
+        # Установка пакетов
+        if command_lower.startswith(('apt-get install', 'apt install', 'yum install', 'dnf install')):
+            package_name = self._extract_package_name(command)
+            if package_name:
+                return "install_package", package_name
+        
+        # Создание файлов
+        elif command_lower.startswith('touch'):
+            file_path = self._extract_file_path(command)
+            if file_path:
+                return "create_file", file_path
+        
+        # Создание директорий
+        elif command_lower.startswith('mkdir'):
+            dir_path = self._extract_directory_path(command)
+            if dir_path:
+                return "create_directory", dir_path
+        
+        # Запуск сервисов
+        elif command_lower.startswith(('systemctl start', 'service start')):
+            service_name = self._extract_service_name(command)
+            if service_name:
+                return "start_service", service_name
+        
+        # Включение сервисов
+        elif command_lower.startswith('systemctl enable'):
+            service_name = self._extract_service_name(command)
+            if service_name:
+                return "enable_service", service_name
+        
+        # Создание пользователей
+        elif command_lower.startswith('useradd'):
+            username = self._extract_username(command)
+            if username:
+                return "create_user", username
+        
+        # Создание групп
+        elif command_lower.startswith('groupadd'):
+            groupname = self._extract_groupname(command)
+            if groupname:
+                return "create_group", groupname
+        
+        return None, None
+    
+    def _extract_package_name(self, command: str) -> Optional[str]:
+        """Извлечение имени пакета из команды установки"""
+        import re
+        patterns = [
+            r'apt-get install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)',
+            r'apt install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)',
+            r'yum install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)',
+            r'dnf install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, command)
+            if match:
+                return match.group(1)
+        return None
+    
+    def _extract_file_path(self, command: str) -> Optional[str]:
+        """Извлечение пути к файлу из команды"""
+        import re
+        match = re.search(r'touch\s+([^\s]+)', command)
+        if match:
+            return match.group(1)
+        return None
+    
+    def _extract_directory_path(self, command: str) -> Optional[str]:
+        """Извлечение пути к директории из команды"""
+        import re
+        match = re.search(r'mkdir\s+(-p\s+)?([^\s]+)', command)
+        if match:
+            return match.group(2)
+        return None
+    
+    def _extract_service_name(self, command: str) -> Optional[str]:
+        """Извлечение имени сервиса из команды"""
+        import re
+        patterns = [
+            r'systemctl start\s+([^\s]+)',
+            r'systemctl enable\s+([^\s]+)',
+            r'service\s+([^\s]+)\s+start'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, command)
+            if match:
+                return match.group(1)
+        return None
+    
+    def _extract_username(self, command: str) -> Optional[str]:
+        """Извлечение имени пользователя из команды"""
+        import re
+        match = re.search(r'useradd\s+([^\s]+)', command)
+        if match:
+            return match.group(1)
+        return None
+    
+    def _extract_groupname(self, command: str) -> Optional[str]:
+        """Извлечение имени группы из команды"""
+        import re
+        match = re.search(r'groupadd\s+([^\s]+)', command)
+        if match:
+            return match.group(1)
+        return None
+    
+    def enhance_subtask_with_idempotency(self, subtask: Subtask) -> Subtask:
+        """Улучшение подзадачи с помощью идемпотентности"""
+        if not self.idempotency_system:
+            return subtask
+        
+        # Генерируем идемпотентные команды
+        idempotent_commands = self.generate_idempotent_commands(subtask)
+        
+        # Создаем улучшенную подзадачу
+        enhanced_subtask = Subtask(
+            subtask_id=subtask.subtask_id,
+            title=subtask.title,
+            description=subtask.description,
+            commands=idempotent_commands,
+            health_checks=subtask.health_checks,
+            expected_output=subtask.expected_output,
+            rollback_commands=subtask.rollback_commands,
+            dependencies=subtask.dependencies,
+            timeout=subtask.timeout,
+            retry_count=subtask.retry_count,
+            max_retries=subtask.max_retries,
+            metadata={
+                **subtask.metadata,
+                "idempotent_enhanced": True,
+                "original_commands": subtask.commands,
+                "idempotency_checks": getattr(subtask, 'idempotency_checks', [])
+            }
+        )
+        
+        self.logger.info(
+            "Подзадача улучшена идемпотентностью",
+            subtask_id=subtask.subtask_id,
+            enhanced_commands=len(idempotent_commands)
+        )
+        
+        return enhanced_subtask
 

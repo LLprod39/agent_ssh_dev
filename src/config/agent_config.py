@@ -34,6 +34,18 @@ class SubtaskAgentConfig(BaseModel):
     max_tokens: int = Field(default=3000, ge=1, le=8000, description="Максимальное количество токенов")
 
 
+class DryRunSettings(BaseModel):
+    """Настройки dry-run режима"""
+    
+    enabled: bool = Field(default=True, description="Включен ли dry-run режим")
+    generate_reports: bool = Field(default=True, description="Генерировать ли отчеты")
+    report_formats: List[str] = Field(default=["text", "json"], description="Форматы отчетов")
+    validate_plans: bool = Field(default=True, description="Валидировать ли планы")
+    analyze_risks: bool = Field(default=True, description="Анализировать ли риски")
+    require_confirmation_for_high_risk: bool = Field(default=True, description="Требовать подтверждение для высокого риска")
+    log_simulations: bool = Field(default=True, description="Логировать ли симуляции")
+
+
 class ExecutorConfig(BaseModel):
     """Конфигурация Executor (выполнение команд)"""
     
@@ -41,6 +53,9 @@ class ExecutorConfig(BaseModel):
     auto_correction_enabled: bool = Field(default=True, description="Включена ли автокоррекция")
     dry_run_mode: bool = Field(default=False, description="Режим симуляции")
     command_timeout: int = Field(default=30, ge=1, le=300, description="Таймаут выполнения команды в секундах")
+    
+    # Настройки dry-run
+    dry_run_settings: DryRunSettings = Field(default_factory=DryRunSettings, description="Настройки dry-run режима")
     
     # Настройки автокоррекции
     autocorrection_max_attempts: int = Field(default=3, ge=1, le=10, description="Максимальное количество попыток автокоррекции")
@@ -108,6 +123,35 @@ class SecurityConfig(BaseModel):
     allowed_commands_only: bool = Field(default=False, description="Разрешать только команды из белого списка")
 
 
+class IdempotencyConfig(BaseModel):
+    """Конфигурация системы идемпотентности"""
+    
+    enabled: bool = Field(default=True, description="Включена ли система идемпотентности")
+    cache_ttl: int = Field(default=300, ge=60, le=3600, description="Время жизни кэша проверок в секундах")
+    max_snapshots: int = Field(default=10, ge=1, le=100, description="Максимальное количество снимков состояния")
+    auto_rollback: bool = Field(default=True, description="Автоматический откат при ошибках")
+    check_timeout: int = Field(default=30, ge=5, le=120, description="Таймаут проверок идемпотентности в секундах")
+    
+    # Настройки проверок
+    enable_package_checks: bool = Field(default=True, description="Включить проверки пакетов")
+    enable_file_checks: bool = Field(default=True, description="Включить проверки файлов")
+    enable_directory_checks: bool = Field(default=True, description="Включить проверки директорий")
+    enable_service_checks: bool = Field(default=True, description="Включить проверки сервисов")
+    enable_user_checks: bool = Field(default=True, description="Включить проверки пользователей")
+    enable_group_checks: bool = Field(default=True, description="Включить проверки групп")
+    enable_port_checks: bool = Field(default=True, description="Включить проверки портов")
+    
+    # Настройки отката
+    rollback_on_failure: bool = Field(default=True, description="Откат при неудаче")
+    rollback_timeout: int = Field(default=60, ge=10, le=300, description="Таймаут отката в секундах")
+    preserve_snapshots: bool = Field(default=True, description="Сохранять снимки после отката")
+    
+    # Настройки логирования
+    log_checks: bool = Field(default=True, description="Логировать проверки идемпотентности")
+    log_skips: bool = Field(default=True, description="Логировать пропуски команд")
+    log_rollbacks: bool = Field(default=True, description="Логировать откаты")
+
+
 class AgentConfig(BaseModel):
     """Основная конфигурация агентов"""
     
@@ -116,6 +160,7 @@ class AgentConfig(BaseModel):
     subtask_agent: SubtaskAgentConfig = Field(default_factory=SubtaskAgentConfig)
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     error_handler: ErrorHandlerConfig = Field(default_factory=ErrorHandlerConfig)
+    idempotency: IdempotencyConfig = Field(default_factory=IdempotencyConfig)
     llm: LLMConfig = Field(..., description="Конфигурация LLM")
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
@@ -134,8 +179,15 @@ class AgentConfig(BaseModel):
         taskmaster_config = TaskmasterConfig(**data.get('agents', {}).get('taskmaster', {}))
         task_agent_config = TaskAgentConfig(**data.get('agents', {}).get('task_agent', {}))
         subtask_agent_config = SubtaskAgentConfig(**data.get('agents', {}).get('subtask_agent', {}))
-        executor_config = ExecutorConfig(**data.get('agents', {}).get('executor', {}))
+        
+        # Обрабатываем конфигурацию executor с поддержкой dry_run_settings
+        executor_data = data.get('agents', {}).get('executor', {})
+        dry_run_settings_data = executor_data.pop('dry_run_settings', {})
+        dry_run_settings = DryRunSettings(**dry_run_settings_data)
+        executor_config = ExecutorConfig(dry_run_settings=dry_run_settings, **executor_data)
+        
         error_handler_config = ErrorHandlerConfig(**data.get('agents', {}).get('error_handler', {}))
+        idempotency_config = IdempotencyConfig(**data.get('idempotency', {}))
         llm_config = LLMConfig(**data.get('llm', {}))
         logging_config = LoggingConfig(**data.get('logging', {}))
         security_config = SecurityConfig(**data.get('security', {}))
@@ -146,6 +198,7 @@ class AgentConfig(BaseModel):
             subtask_agent=subtask_agent_config,
             executor=executor_config,
             error_handler=error_handler_config,
+            idempotency=idempotency_config,
             llm=llm_config,
             logging=logging_config,
             security=security_config

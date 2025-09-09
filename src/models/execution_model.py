@@ -23,6 +23,8 @@ from ..agents.subtask_agent import Subtask
 from ..agents.task_master_integration import TaskMasterIntegration, TaskMasterResult
 from ..utils.logger import StructuredLogger
 from ..utils.autocorrection import AutocorrectionEngine, AutocorrectionResult
+from ..utils.idempotency_system import IdempotencySystem, IdempotencyCheck
+from ..utils.dry_run_system import DryRunSystem, DryRunResult
 # ErrorTracker будет импортирован динамически для избежания циклических импортов
 from .command_result import CommandResult, ExecutionStatus
 from .execution_context import ExecutionContext
@@ -95,6 +97,13 @@ class ExecutionModel:
             max_attempts=self.executor_config.autocorrection_max_attempts,
             timeout=self.executor_config.autocorrection_timeout
         )
+        
+        # Инициализация системы идемпотентности
+        idempotency_config = config.get("idempotency", {})
+        self.idempotency_system = IdempotencySystem(ssh_connector, idempotency_config)
+        
+        # Инициализация системы dry-run
+        self.dry_run_system = DryRunSystem(self.logger)
         
         # Инициализация системы подсчета ошибок (динамический импорт)
         try:
@@ -267,7 +276,7 @@ class ExecutionModel:
             )
     
     def _execute_commands(self, commands: List[str], context: ExecutionContext) -> List[CommandResult]:
-        """Выполнение списка команд с интегрированной проверкой безопасности"""
+        """Выполнение списка команд с интегрированной проверкой безопасности и идемпотентности"""
         results = []
         
         for i, command in enumerate(commands):
@@ -281,6 +290,26 @@ class ExecutionModel:
                 'command_index': i,
                 'server_info': context.server_info
             }
+            
+            # Проверяем идемпотентность команды
+            idempotency_checks = self._extract_idempotency_checks(command)
+            if idempotency_checks and self.check_command_idempotency(command, idempotency_checks):
+                self.logger.info("Команда пропущена из-за идемпотентности", command=command)
+                # Создаем фиктивный успешный результат
+                result = CommandResult(
+                    command=command,
+                    success=True,
+                    exit_code=0,
+                    stdout=f"[IDEMPOTENT] Команда '{command}' пропущена - состояние уже достигнуто",
+                    duration=0.0,
+                    status=ExecutionStatus.COMPLETED,
+                    metadata={
+                        "idempotent_skip": True,
+                        "execution_timestamp": datetime.now().isoformat()
+                    }
+                )
+                results.append(result)
+                continue
             
             # Проверяем режим dry-run
             if self.executor_config.dry_run_mode:
@@ -699,3 +728,337 @@ class ExecutionModel:
         """Сброс статистики ошибок для шага"""
         if self.error_tracker:
             self.error_tracker.reset_step_stats(step_id)
+    
+    def create_idempotency_snapshot(self, task_id: str):
+        """Создание снимка состояния для идемпотентности"""
+        return self.idempotency_system.create_state_snapshot(task_id)
+    
+    def generate_idempotent_command(self, base_command: str, command_type: str, target: str, **kwargs):
+        """Генерация идемпотентной команды"""
+        return self.idempotency_system.generate_idempotent_command(base_command, command_type, target, **kwargs)
+    
+    def check_command_idempotency(self, command: str, checks: List[IdempotencyCheck]) -> bool:
+        """Проверка необходимости пропуска команды из-за идемпотентности"""
+        return self.idempotency_system.should_skip_command(command, checks)
+    
+    def execute_idempotency_rollback(self, snapshot_id: str):
+        """Выполнение отката на основе снимка состояния"""
+        return self.idempotency_system.execute_rollback(snapshot_id)
+    
+    def get_idempotency_status(self):
+        """Получение статуса системы идемпотентности"""
+        return self.idempotency_system.get_system_status()
+    
+    def _extract_idempotency_checks(self, command: str) -> List[IdempotencyCheck]:
+        """Извлечение проверок идемпотентности из команды"""
+        checks = []
+        
+        # Анализируем команду и определяем тип
+        command_lower = command.lower().strip()
+        
+        # Проверка установки пакетов
+        if command_lower.startswith(('apt-get install', 'apt install', 'yum install', 'dnf install')):
+            package_name = self._extract_package_name(command)
+            if package_name:
+                checks.append(self.idempotency_system._create_package_check(package_name))
+        
+        # Проверка создания файлов
+        elif command_lower.startswith(('touch ', 'echo ') and '>' in command):
+            file_path = self._extract_file_path(command)
+            if file_path:
+                checks.append(self.idempotency_system._create_file_check(file_path))
+        
+        # Проверка создания директорий
+        elif command_lower.startswith('mkdir'):
+            dir_path = self._extract_directory_path(command)
+            if dir_path:
+                checks.append(self.idempotency_system._create_directory_check(dir_path))
+        
+        # Проверка запуска сервисов
+        elif command_lower.startswith(('systemctl start', 'service start')):
+            service_name = self._extract_service_name(command)
+            if service_name:
+                checks.append(self.idempotency_system._create_service_check(service_name))
+        
+        # Проверка включения сервисов
+        elif command_lower.startswith('systemctl enable'):
+            service_name = self._extract_service_name(command)
+            if service_name:
+                checks.append(self.idempotency_system._create_service_enabled_check(service_name))
+        
+        # Проверка создания пользователей
+        elif command_lower.startswith('useradd'):
+            username = self._extract_username(command)
+            if username:
+                checks.append(self.idempotency_system._create_user_check(username))
+        
+        # Проверка создания групп
+        elif command_lower.startswith('groupadd'):
+            groupname = self._extract_groupname(command)
+            if groupname:
+                checks.append(self.idempotency_system._create_group_check(groupname))
+        
+        return checks
+    
+    def _extract_package_name(self, command: str) -> Optional[str]:
+        """Извлечение имени пакета из команды установки"""
+        import re
+        # Паттерны для различных менеджеров пакетов
+        patterns = [
+            r'apt-get install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)',
+            r'apt install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)',
+            r'yum install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)',
+            r'dnf install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, command)
+            if match:
+                return match.group(1)
+        return None
+    
+    def _extract_file_path(self, command: str) -> Optional[str]:
+        """Извлечение пути к файлу из команды"""
+        import re
+        # Паттерны для создания файлов
+        patterns = [
+            r'touch\s+([^\s]+)',
+            r'echo\s+.*>\s*([^\s]+)',
+            r'echo\s+.*>>\s*([^\s]+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, command)
+            if match:
+                return match.group(1)
+        return None
+    
+    def _extract_directory_path(self, command: str) -> Optional[str]:
+        """Извлечение пути к директории из команды"""
+        import re
+        # Паттерн для создания директорий
+        match = re.search(r'mkdir\s+(-p\s+)?([^\s]+)', command)
+        if match:
+            return match.group(2)
+        return None
+    
+    def _extract_service_name(self, command: str) -> Optional[str]:
+        """Извлечение имени сервиса из команды"""
+        import re
+        # Паттерны для работы с сервисами
+        patterns = [
+            r'systemctl start\s+([^\s]+)',
+            r'systemctl enable\s+([^\s]+)',
+            r'service\s+([^\s]+)\s+start'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, command)
+            if match:
+                return match.group(1)
+        return None
+    
+    def _extract_username(self, command: str) -> Optional[str]:
+        """Извлечение имени пользователя из команды"""
+        import re
+        match = re.search(r'useradd\s+([^\s]+)', command)
+        if match:
+            return match.group(1)
+        return None
+    
+    def _extract_groupname(self, command: str) -> Optional[str]:
+        """Извлечение имени группы из команды"""
+        import re
+        match = re.search(r'groupadd\s+([^\s]+)', command)
+        if match:
+            return match.group(1)
+        return None
+    
+    def preview_execution(self, context: ExecutionContext) -> DryRunResult:
+        """
+        Предварительный просмотр выполнения подзадачи (dry-run)
+        
+        Args:
+            context: Контекст выполнения
+            
+        Returns:
+            Результат предварительного просмотра
+        """
+        subtask = context.subtask
+        
+        self.logger.info(
+            "Начало предварительного просмотра",
+            subtask_id=subtask.subtask_id,
+            title=subtask.title,
+            commands_count=len(subtask.commands)
+        )
+        
+        # Создаем контекст для dry-run
+        dry_run_context = {
+            "subtask_id": subtask.subtask_id,
+            "subtask_title": subtask.title,
+            "server_info": context.server_info,
+            "step_id": getattr(context, 'step_id', None),
+            "task_id": getattr(context, 'task_id', None)
+        }
+        
+        # Симулируем выполнение команд
+        all_commands = subtask.commands + subtask.health_checks + subtask.rollback_commands
+        dry_run_result = self.dry_run_system.simulate_execution(all_commands, dry_run_context)
+        
+        # Добавляем информацию о подзадаче
+        dry_run_result.metadata.update({
+            "subtask_id": subtask.subtask_id,
+            "subtask_title": subtask.title,
+            "subtask_description": subtask.description,
+            "main_commands": len(subtask.commands),
+            "health_checks": len(subtask.health_checks),
+            "rollback_commands": len(subtask.rollback_commands)
+        })
+        
+        self.logger.info(
+            "Предварительный просмотр завершен",
+            subtask_id=subtask.subtask_id,
+            success=dry_run_result.success,
+            risk_level=dry_run_result.risk_summary.get("overall_risk", "unknown")
+        )
+        
+        return dry_run_result
+    
+    def validate_plan(self, context: ExecutionContext) -> Dict[str, Any]:
+        """
+        Валидация плана выполнения подзадачи
+        
+        Args:
+            context: Контекст выполнения
+            
+        Returns:
+            Результат валидации плана
+        """
+        subtask = context.subtask
+        
+        self.logger.info(
+            "Начало валидации плана",
+            subtask_id=subtask.subtask_id,
+            title=subtask.title
+        )
+        
+        # Создаем контекст для валидации
+        validation_context = {
+            "subtask_id": subtask.subtask_id,
+            "subtask_title": subtask.title,
+            "server_info": context.server_info,
+            "step_id": getattr(context, 'step_id', None),
+            "task_id": getattr(context, 'task_id', None)
+        }
+        
+        # Анализируем команды
+        all_commands = subtask.commands + subtask.health_checks + subtask.rollback_commands
+        dry_run_result = self.dry_run_system.simulate_execution(all_commands, validation_context)
+        
+        # Извлекаем результат валидации
+        validation_result = dry_run_result.validation_result
+        
+        if validation_result:
+            result = {
+                "valid": validation_result.valid,
+                "issues": validation_result.issues,
+                "warnings": validation_result.warnings,
+                "risk_assessment": validation_result.risk_assessment,
+                "estimated_duration": validation_result.estimated_duration,
+                "recommendations": validation_result.recommendations,
+                "commands_analysis": [
+                    {
+                        "command": analysis.command,
+                        "command_type": analysis.command_type.value,
+                        "risk_level": analysis.risk_level.value,
+                        "potential_issues": analysis.potential_issues,
+                        "dependencies": analysis.dependencies,
+                        "side_effects": analysis.side_effects,
+                        "requires_confirmation": analysis.requires_confirmation
+                    }
+                    for analysis in validation_result.commands_analysis
+                ]
+            }
+        else:
+            result = {
+                "valid": False,
+                "issues": ["Не удалось выполнить валидацию плана"],
+                "warnings": [],
+                "risk_assessment": {},
+                "estimated_duration": 0.0,
+                "recommendations": [],
+                "commands_analysis": []
+            }
+        
+        self.logger.info(
+            "Валидация плана завершена",
+            subtask_id=subtask.subtask_id,
+            valid=result["valid"],
+            issues_count=len(result["issues"]),
+            warnings_count=len(result["warnings"])
+        )
+        
+        return result
+    
+    def generate_execution_report(self, context: ExecutionContext, format: str = "text") -> str:
+        """
+        Генерация отчета о планируемом выполнении
+        
+        Args:
+            context: Контекст выполнения
+            format: Формат отчета (text, json, markdown)
+            
+        Returns:
+            Отчет в указанном формате
+        """
+        subtask = context.subtask
+        
+        self.logger.info(
+            "Генерация отчета о выполнении",
+            subtask_id=subtask.subtask_id,
+            format=format
+        )
+        
+        # Получаем результат dry-run
+        dry_run_result = self.preview_execution(context)
+        
+        # Генерируем отчет
+        report = self.dry_run_system.generate_dry_run_report(dry_run_result, format)
+        
+        self.logger.info(
+            "Отчет сгенерирован",
+            subtask_id=subtask.subtask_id,
+            report_length=len(report)
+        )
+        
+        return report
+    
+    def get_dry_run_summary(self, context: ExecutionContext) -> Dict[str, Any]:
+        """
+        Получение краткой сводки dry-run выполнения
+        
+        Args:
+            context: Контекст выполнения
+            
+        Returns:
+            Краткая сводка
+        """
+        subtask = context.subtask
+        
+        # Получаем результат dry-run
+        dry_run_result = self.preview_execution(context)
+        
+        summary = {
+            "subtask_id": subtask.subtask_id,
+            "subtask_title": subtask.title,
+            "success": dry_run_result.success,
+            "execution_summary": dry_run_result.execution_summary,
+            "risk_summary": dry_run_result.risk_summary,
+            "requires_confirmation": dry_run_result.risk_summary.get("requires_confirmation", False),
+            "estimated_duration": dry_run_result.execution_summary.get("estimated_total_duration", 0.0),
+            "recommendations": dry_run_result.recommendations[:3],  # Только первые 3 рекомендации
+            "metadata": dry_run_result.metadata
+        }
+        
+        return summary

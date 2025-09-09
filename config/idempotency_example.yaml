@@ -1,0 +1,93 @@
+# Пример конфигурации с настройками идемпотентности
+llm:
+  api_key: "your-api-key-here"
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4"
+  max_tokens: 4000
+  temperature: 0.7
+  timeout: 60
+
+agents:
+  taskmaster:
+    enabled: true
+    model: "gpt-4"
+    temperature: 0.7
+    max_tokens: 1000
+
+  task_agent:
+    model: "gpt-4"
+    temperature: 0.3
+    max_steps: 10
+    max_tokens: 2000
+
+  subtask_agent:
+    model: "gpt-4"
+    temperature: 0.1
+    max_subtasks: 20
+    max_tokens: 3000
+
+  executor:
+    max_retries_per_command: 2
+    auto_correction_enabled: true
+    dry_run_mode: false
+    command_timeout: 30
+    autocorrection_max_attempts: 3
+    autocorrection_timeout: 30
+    enable_syntax_correction: true
+    enable_permission_correction: true
+    enable_network_correction: true
+    enable_service_correction: true
+    enable_package_correction: true
+    enable_command_substitution: true
+
+  error_handler:
+    error_threshold_per_step: 4
+    send_to_planner_after_threshold: true
+    human_escalation_threshold: 3
+    max_error_reports: 10
+    enable_error_tracking: true
+    max_retention_days: 7
+    track_error_patterns: true
+    enable_escalation: true
+    escalation_cooldown_minutes: 5
+
+# Конфигурация системы идемпотентности
+idempotency:
+  enabled: true
+  cache_ttl: 300  # 5 минут
+  max_snapshots: 10
+  auto_rollback: true
+  check_timeout: 30
+  
+  # Настройки проверок
+  enable_package_checks: true
+  enable_file_checks: true
+  enable_directory_checks: true
+  enable_service_checks: true
+  enable_user_checks: true
+  enable_group_checks: true
+  enable_port_checks: true
+  
+  # Настройки отката
+  rollback_on_failure: true
+  rollback_timeout: 60
+  preserve_snapshots: true
+  
+  # Настройки логирования
+  log_checks: true
+  log_skips: true
+  log_rollbacks: true
+
+logging:
+  level: "INFO"
+  log_file: "logs/agent.log"
+  error_file: "logs/errors.log"
+  max_file_size: "10 MB"
+  retention_days: 7
+  compression: true
+
+security:
+  validate_commands: true
+  log_forbidden_attempts: true
+  require_confirmation_for_dangerous: true
+  allowed_commands_only: false
