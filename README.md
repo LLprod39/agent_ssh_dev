@@ -85,7 +85,6 @@ cp config/agent_config.yaml.example config/agent_config.yaml
 ## Использование
 
 ### Базовое использование
-
 ```python
 from agent_ssh_dev import SSHAgent
 
