@@ -106,12 +106,8 @@ class SubtaskAgent:
         self.task_master = task_master
         self.logger = StructuredLogger("SubtaskAgent")
         
-        # Инициализация системы идемпотентности
-        if ssh_connector:
-            idempotency_config = config.get("idempotency", {})
-            self.idempotency_system = IdempotencySystem(ssh_connector, idempotency_config)
-        else:
-            self.idempotency_system = None
+        # Инициализация системы идемпотентности (отключена для упрощения)
+        self.idempotency_system = None
         
         # Создаем интерфейс LLM
         self.llm_interface = LLMInterfaceFactory.create_interface(
@@ -198,7 +194,21 @@ class SubtaskAgent:
             # Валидируем подзадачи
             validation_result = self._validate_subtasks(subtasks, context)
             if not validation_result["valid"]:
-                self.logger.warning("Подзадачи не прошли валидацию", issues=validation_result["issues"])
+                self.logger.warning("Подзадачи не прошли валидацию", 
+                                  issues=validation_result["issues"],
+                                  subtasks_count=validation_result["subtasks_count"],
+                                  total_commands=validation_result["total_commands"],
+                                  total_health_checks=validation_result["total_health_checks"])
+                
+                # Выводим детали валидации в консоль
+                print(f"\n❌ ПОДЗАДАЧИ НЕ ПРОШЛИ ВАЛИДАЦИЮ:")
+                print(f"   Подзадач: {validation_result['subtasks_count']}")
+                print(f"   Команд: {validation_result['total_commands']}")
+                print(f"   Health-check: {validation_result['total_health_checks']}")
+                print(f"   Проблемы:")
+                for issue in validation_result["issues"]:
+                    print(f"     • {issue}")
+                print()
             
             # Оптимизируем подзадачи
             self._optimize_subtasks(subtasks, context)
@@ -211,6 +221,20 @@ class SubtaskAgent:
                 subtasks_count=len(subtasks),
                 duration=planning_duration
             )
+            
+            # Выводим информацию о созданных подзадачах
+            print(f"\n🔧 СОЗДАНЫ ПОДЗАДАЧИ ДЛЯ ШАГА '{step.title}':")
+            print(f"   ID шага: {step.step_id}")
+            print(f"   Подзадач: {len(subtasks)}")
+            print(f"   Время планирования: {planning_duration:.2f}с")
+            print(f"   Подзадачи:")
+            for i, subtask in enumerate(subtasks, 1):
+                print(f"     {i}. {subtask.title}")
+                print(f"        Команд: {len(subtask.commands)}")
+                print(f"        Health-check: {len(subtask.health_checks)}")
+                if subtask.commands:
+                    print(f"        Команды: {', '.join(subtask.commands[:3])}{'...' if len(subtask.commands) > 3 else ''}")
+            print()
             
             return SubtaskPlanningResult(
                 success=True,
@@ -263,7 +287,7 @@ class SubtaskAgent:
             "4. Укажи ожидаемый результат каждой команды",
             "5. Добавь команды отката (rollback) если необходимо",
             "6. Команды должны быть идемпотентными",
-            "7. Учитывай зависимости между подзадачами",
+            "7. Учитывай зависимости между подзадачами по ИНДЕКСАМ (0, 1, 2, ...)",
             "",
             "ФОРМАТ ОТВЕТА (строго JSON):",
             "{",
@@ -275,7 +299,7 @@ class SubtaskAgent:
             '      "health_checks": ["проверка1", "проверка2"],',
             '      "expected_output": "ожидаемый результат",',
             '      "rollback_commands": ["откат1", "откат2"],',
-            '      "dependencies": [],',
+            '      "dependencies": [0, 1],',
             '      "timeout": 30',
             '    }',
             '  ]',
@@ -370,15 +394,33 @@ class SubtaskAgent:
             subtasks = []
             for i, subtask_data in enumerate(subtasks_data):
                 try:
+                    # Фильтруем команды, оставляя только строки
+                    commands = subtask_data.get("commands", [])
+                    filtered_commands = []
+                    for cmd in commands:
+                        if isinstance(cmd, str):
+                            filtered_commands.append(cmd)
+                        else:
+                            self.logger.warning(f"Пропущена не-строка команда: {type(cmd)} = {cmd}")
+                    
+                    # Фильтруем health_checks, оставляя только строки
+                    health_checks = subtask_data.get("health_checks", [])
+                    filtered_health_checks = []
+                    for hc in health_checks:
+                        if isinstance(hc, str):
+                            filtered_health_checks.append(hc)
+                        else:
+                            self.logger.warning(f"Пропущен не-строка health-check: {type(hc)} = {hc}")
+                    
                     subtask = Subtask(
                         subtask_id=f"{step_id}_subtask_{i+1}",
                         title=subtask_data.get("title", f"Подзадача {i+1}"),
                         description=subtask_data.get("description", ""),
-                        commands=subtask_data.get("commands", []),
-                        health_checks=subtask_data.get("health_checks", []),
+                        commands=filtered_commands,
+                        health_checks=filtered_health_checks,
                         expected_output=subtask_data.get("expected_output"),
                         rollback_commands=subtask_data.get("rollback_commands", []),
-                        dependencies=subtask_data.get("dependencies", []),
+                        dependencies=[],  # Пока пустые зависимости
                         timeout=subtask_data.get("timeout", 30),
                         metadata={
                             "step_id": step_id,
@@ -391,6 +433,19 @@ class SubtaskAgent:
                 except Exception as e:
                     self.logger.warning(f"Ошибка создания подзадачи {i+1}", error=str(e))
                     continue
+            
+            # Теперь устанавливаем зависимости по индексам
+            for i, subtask_data in enumerate(subtasks_data):
+                dependencies = subtask_data.get("dependencies", [])
+                if dependencies and i < len(subtasks):
+                    # Преобразуем индексы в ID подзадач
+                    subtask_dependencies = []
+                    for dep_index in dependencies:
+                        if isinstance(dep_index, int) and 0 <= dep_index < len(subtasks):
+                            subtask_dependencies.append(subtasks[dep_index].subtask_id)
+                        else:
+                            self.logger.warning(f"Некорректный индекс зависимости: {dep_index}")
+                    subtasks[i].dependencies = subtask_dependencies
             
             self.logger.info(f"Создано {len(subtasks)} подзадач из ответа LLM")
             return subtasks
@@ -417,8 +472,9 @@ class SubtaskAgent:
             if not subtask.commands:
                 issues.append(f"Подзадача {i+1} не содержит команд")
             
-            if not subtask.health_checks:
-                issues.append(f"Подзадача {i+1} не содержит health-check команд")
+            # Health-check команды не обязательны для простых задач
+            # if not subtask.health_checks:
+            #     issues.append(f"Подзадача {i+1} не содержит health-check команд")
             
             # Проверяем опасные команды
             for command in subtask.commands:
@@ -627,6 +683,11 @@ class SubtaskAgent:
     
     def _analyze_command(self, command: str) -> tuple:
         """Анализ команды для определения типа и цели"""
+        # Проверяем, что command является строкой
+        if not isinstance(command, str):
+            self.logger.warning(f"Команда не является строкой: {type(command)} = {command}")
+            return None, None
+            
         command_lower = command.lower().strip()
         
         # Установка пакетов

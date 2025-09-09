@@ -11,12 +11,12 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
 
-from models.execution_model import (
+from src.models.execution_model import (
     ExecutionModel, ExecutionStatus, CommandResult, 
     SubtaskExecutionResult, ExecutionContext
 )
-from agents.subtask_agent import Subtask
-from config.agent_config import AgentConfig, ExecutorConfig, LLMConfig
+from src.agents.subtask_agent import Subtask
+from src.config.agent_config import AgentConfig, ExecutorConfig, LLMConfig
 
 
 class MockSSHConnection:

@@ -246,7 +246,7 @@ class ErrorHandler:
         
         return None
     
-    def handle_task_completion(self, task: Task, execution_results: Dict[str, Any]) -> ErrorReport:
+    async def handle_task_completion(self, task: Task, execution_results: Dict[str, Any]) -> ErrorReport:
         """
         Обработка завершения задачи
         
@@ -266,7 +266,7 @@ class ErrorHandler:
         patterns = self._analyze_error_patterns(task)
         
         # Создаем итоговый отчет
-        report = self._generate_task_summary_report(task, task_error_summary, patterns, execution_results)
+        report = await self._generate_task_summary_report(task, task_error_summary, patterns, execution_results)
         
         # Сохраняем отчет
         self.error_reports[report.report_id] = report
@@ -282,7 +282,7 @@ class ErrorHandler:
         
         return report
     
-    def take_server_snapshot(self, snapshot_type: ServerSnapshotType, 
+    async def take_server_snapshot(self, snapshot_type: ServerSnapshotType, 
                            context: Optional[Dict[str, Any]] = None) -> ServerSnapshot:
         """
         Создание снимка состояния сервера
@@ -303,7 +303,7 @@ class ErrorHandler:
                 # Создаем пустой снимок если SSH недоступен
                 data = {"error": "SSH коннектор недоступен"}
             else:
-                data = self._collect_server_data(snapshot_type, context)
+                data = await self._collect_server_data(snapshot_type, context)
             
             snapshot = ServerSnapshot(
                 snapshot_id=snapshot_id,
@@ -508,15 +508,15 @@ class ErrorHandler:
             patterns_removed=len(old_patterns)
         )
     
-    def _generate_planner_report(self, step_id: str, task: Task, step_stats: StepErrorStats, 
+    async def _generate_planner_report(self, step_id: str, task: Task, step_stats: StepErrorStats, 
                                 error_details: Dict[str, Any]) -> ErrorReport:
         """Генерация отчета для планировщика"""
         report_id = f"planner_report_{step_id}_{int(time.time() * 1000)}"
         
         # Собираем снимки сервера
         snapshots = [
-            self.take_server_snapshot(ServerSnapshotType.SYSTEM_INFO),
-            self.take_server_snapshot(ServerSnapshotType.SERVICE_STATUS)
+            await self.take_server_snapshot(ServerSnapshotType.SYSTEM_INFO),
+            await self.take_server_snapshot(ServerSnapshotType.SERVICE_STATUS)
         ]
         
         # Генерируем рекомендации
@@ -541,7 +541,7 @@ class ErrorHandler:
                         "timestamp": error.timestamp.isoformat(),
                         "command": error.command,
                         "error_message": error.error_message[:200],
-                        "severity": error.severity.value
+                        "severity": error.severity.value if hasattr(error.severity, 'value') else error.severity
                     }
                     for error in recent_errors[-5:]  # Последние 5 ошибок
                 ],
@@ -580,19 +580,19 @@ class ErrorHandler:
         
         return report
     
-    def _generate_human_escalation_report(self, step_id: str, task: Task, step_stats: StepErrorStats,
+    async def _generate_human_escalation_report(self, step_id: str, task: Task, step_stats: StepErrorStats,
                                         error_details: Dict[str, Any]) -> ErrorReport:
         """Генерация отчета для эскалации к человеку"""
         report_id = f"human_escalation_{step_id}_{int(time.time() * 1000)}"
         
         # Собираем полные снимки сервера
         snapshots = [
-            self.take_server_snapshot(ServerSnapshotType.SYSTEM_INFO),
-            self.take_server_snapshot(ServerSnapshotType.PROCESS_LIST),
-            self.take_server_snapshot(ServerSnapshotType.DISK_USAGE),
-            self.take_server_snapshot(ServerSnapshotType.MEMORY_USAGE),
-            self.take_server_snapshot(ServerSnapshotType.SERVICE_STATUS),
-            self.take_server_snapshot(ServerSnapshotType.LOG_ANALYSIS)
+            await self.take_server_snapshot(ServerSnapshotType.SYSTEM_INFO),
+            await self.take_server_snapshot(ServerSnapshotType.PROCESS_LIST),
+            await self.take_server_snapshot(ServerSnapshotType.DISK_USAGE),
+            await self.take_server_snapshot(ServerSnapshotType.MEMORY_USAGE),
+            await self.take_server_snapshot(ServerSnapshotType.SERVICE_STATUS),
+            await self.take_server_snapshot(ServerSnapshotType.LOG_ANALYSIS)
         ]
         
         # Генерируем рекомендации
@@ -617,10 +617,10 @@ class ErrorHandler:
                         "timestamp": error.timestamp.isoformat(),
                         "command": error.command,
                         "error_message": error.error_message,
-                        "severity": error.severity.value,
+                        "severity": error.severity.value if hasattr(error.severity, 'value') else error.severity,
                         "exit_code": error.exit_code
                     }
-                    for error in recent_errors if error.severity.value in ["high", "critical"]
+                    for error in recent_errors if (error.severity.value if hasattr(error.severity, 'value') else error.severity) in ["high", "critical"]
                 ],
                 "escalation_reason": "human_escalation_threshold_exceeded"
             },
@@ -659,7 +659,7 @@ class ErrorHandler:
         
         return report
     
-    def _generate_task_summary_report(self, task: Task, error_summary: Dict[str, Any],
+    async def _generate_task_summary_report(self, task: Task, error_summary: Dict[str, Any],
                                     patterns: List[ErrorPattern], execution_results: Dict[str, Any]) -> ErrorReport:
         """Генерация итогового отчета по задаче"""
         report_id = f"task_summary_{task.task_id}_{int(time.time() * 1000)}"
@@ -677,8 +677,8 @@ class ErrorHandler:
         
         # Собираем снимки сервера
         snapshots = [
-            self.take_server_snapshot(ServerSnapshotType.SYSTEM_INFO),
-            self.take_server_snapshot(ServerSnapshotType.SERVICE_STATUS)
+            await self.take_server_snapshot(ServerSnapshotType.SYSTEM_INFO),
+            await self.take_server_snapshot(ServerSnapshotType.SERVICE_STATUS)
         ]
         
         # Генерируем рекомендации
@@ -705,7 +705,7 @@ class ErrorHandler:
                     {
                         "step_id": step.step_id,
                         "title": step.title,
-                        "status": step.status.value,
+                        "status": step.status.value if hasattr(step.status, 'value') else step.status,
                         "error_count": step.error_count,
                         "duration": step.get_duration()
                     }
@@ -787,7 +787,7 @@ class ErrorHandler:
         
         return patterns
     
-    def _collect_server_data(self, snapshot_type: ServerSnapshotType, 
+    async def _collect_server_data(self, snapshot_type: ServerSnapshotType, 
                            context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Сбор данных с сервера"""
         data = {}
@@ -795,47 +795,47 @@ class ErrorHandler:
         try:
             if snapshot_type == ServerSnapshotType.SYSTEM_INFO:
                 data = {
-                    "hostname": self._execute_command("hostname"),
-                    "os_info": self._execute_command("cat /etc/os-release"),
-                    "kernel": self._execute_command("uname -a"),
-                    "uptime": self._execute_command("uptime"),
-                    "load_average": self._execute_command("cat /proc/loadavg")
+                    "hostname": await self._execute_command("hostname"),
+                    "os_info": await self._execute_command("cat /etc/os-release"),
+                    "kernel": await self._execute_command("uname -a"),
+                    "uptime": await self._execute_command("uptime"),
+                    "load_average": await self._execute_command("cat /proc/loadavg")
                 }
             elif snapshot_type == ServerSnapshotType.PROCESS_LIST:
                 data = {
-                    "top_processes": self._execute_command("ps aux --sort=-%cpu | head -20"),
-                    "running_services": self._execute_command("systemctl list-units --type=service --state=running"),
-                    "failed_services": self._execute_command("systemctl list-units --type=service --state=failed")
+                    "top_processes": await self._execute_command("ps aux --sort=-%cpu | head -20"),
+                    "running_services": await self._execute_command("systemctl list-units --type=service --state=running"),
+                    "failed_services": await self._execute_command("systemctl list-units --type=service --state=failed")
                 }
             elif snapshot_type == ServerSnapshotType.DISK_USAGE:
                 data = {
-                    "disk_usage": self._execute_command("df -h"),
-                    "inode_usage": self._execute_command("df -i"),
-                    "largest_dirs": self._execute_command("du -h / 2>/dev/null | sort -hr | head -20")
+                    "disk_usage": await self._execute_command("df -h"),
+                    "inode_usage": await self._execute_command("df -i"),
+                    "largest_dirs": await self._execute_command("du -h / 2>/dev/null | sort -hr | head -20")
                 }
             elif snapshot_type == ServerSnapshotType.MEMORY_USAGE:
                 data = {
-                    "memory_info": self._execute_command("free -h"),
-                    "memory_details": self._execute_command("cat /proc/meminfo"),
-                    "swap_usage": self._execute_command("swapon -s")
+                    "memory_info": await self._execute_command("free -h"),
+                    "memory_details": await self._execute_command("cat /proc/meminfo"),
+                    "swap_usage": await self._execute_command("swapon -s")
                 }
             elif snapshot_type == ServerSnapshotType.NETWORK_STATUS:
                 data = {
-                    "network_interfaces": self._execute_command("ip addr show"),
-                    "network_connections": self._execute_command("ss -tuln"),
-                    "routing_table": self._execute_command("ip route show")
+                    "network_interfaces": await self._execute_command("ip addr show"),
+                    "network_connections": await self._execute_command("ss -tuln"),
+                    "routing_table": await self._execute_command("ip route show")
                 }
             elif snapshot_type == ServerSnapshotType.SERVICE_STATUS:
                 data = {
-                    "systemctl_status": self._execute_command("systemctl status"),
-                    "active_services": self._execute_command("systemctl list-units --type=service --state=active"),
-                    "failed_services": self._execute_command("systemctl list-units --type=service --state=failed")
+                    "systemctl_status": await self._execute_command("systemctl status"),
+                    "active_services": await self._execute_command("systemctl list-units --type=service --state=active"),
+                    "failed_services": await self._execute_command("systemctl list-units --type=service --state=failed")
                 }
             elif snapshot_type == ServerSnapshotType.LOG_ANALYSIS:
                 data = {
-                    "system_logs": self._execute_command("journalctl --since '1 hour ago' --no-pager | tail -100"),
-                    "auth_logs": self._execute_command("tail -50 /var/log/auth.log 2>/dev/null || echo 'Auth log not accessible'"),
-                    "syslog": self._execute_command("tail -50 /var/log/syslog 2>/dev/null || echo 'Syslog not accessible'")
+                    "system_logs": await self._execute_command("journalctl --since '1 hour ago' --no-pager | tail -100"),
+                    "auth_logs": await self._execute_command("tail -50 /var/log/auth.log 2>/dev/null || echo 'Auth log not accessible'"),
+                    "syslog": await self._execute_command("tail -50 /var/log/syslog 2>/dev/null || echo 'Syslog not accessible'")
                 }
             
         except Exception as e:
@@ -843,17 +843,17 @@ class ErrorHandler:
         
         return data
     
-    def _execute_command(self, command: str) -> str:
+    async def _execute_command(self, command: str) -> str:
         """Выполнение команды на сервере"""
         if not self.ssh_connector:
             return f"[SSH недоступен] {command}"
         
         try:
-            stdout, stderr, exit_code = self.ssh_connector.execute_command(command, timeout=30)
-            if exit_code == 0:
-                return stdout.strip()
+            result = await self.ssh_connector.execute_command(command, timeout=30)
+            if result.exit_code == 0:
+                return result.stdout.strip()
             else:
-                return f"[Ошибка {exit_code}] {stderr.strip()}"
+                return f"[Ошибка {result.exit_code}] {result.stderr.strip()}"
         except Exception as e:
             return f"[Исключение] {str(e)}"
     
@@ -924,7 +924,7 @@ class ErrorHandler:
         suggested_solutions = self._generate_pattern_solutions(pattern_key, error_group)
         
         # Определяем серьезность
-        severities = [error.severity.value for _, error in error_group]
+        severities = [error.severity.value if hasattr(error.severity, 'value') else error.severity for _, error in error_group]
         severity = "high" if "critical" in severities else ("medium" if "high" in severities else "low")
         
         # Временные метки

@@ -60,7 +60,7 @@ class TaskExecutionState:
     
     def is_completed(self) -> bool:
         """Проверка завершения задачи"""
-        return self.completed_steps >= self.total_steps
+        return self.completed_steps >= self.total_steps and self.failed_steps == 0
     
     def is_failed(self) -> bool:
         """Проверка провала задачи"""
@@ -160,7 +160,7 @@ class SSHAgent:
                 else:
                     # Создаем конфигурацию по умолчанию
                     self.agent_config = AgentConfig(
-                        llm={"api_key": "your-api-key"}
+                        llm={"api_key": "AIzaSyDGBAljOf_M5vZr8FhICnoH6w8ij4a87OQ"}
                     )
         except Exception as e:
             raise RuntimeError(f"Ошибка загрузки конфигурации: {e}")
@@ -169,10 +169,15 @@ class SSHAgent:
         """Инициализация всех компонентов агента."""
         try:
             # Настройка логирования
-            LoggerSetup.setup_logging(
-                log_level=self.agent_config.logging.level,
-                log_file=self.agent_config.logging.file
-            )
+            logging_config = {
+                'level': self.agent_config.logging.level,
+                'log_file': self.agent_config.logging.log_file,
+                'error_file': self.agent_config.logging.error_file,
+                'max_file_size': self.agent_config.logging.max_file_size,
+                'retention_days': self.agent_config.logging.retention_days,
+                'compression': self.agent_config.logging.compression
+            }
+            LoggerSetup(logging_config)
             self.logger = StructuredLogger("SSHAgent")
             
             # Инициализация SSH коннектора
@@ -181,19 +186,19 @@ class SSHAgent:
             # Инициализация Task Master интеграции
             if self.agent_config.taskmaster.enabled:
                 self.task_master = TaskMasterIntegration(
-                    project_path=".",
-                    config=self.agent_config.taskmaster
+                    config=self.agent_config.taskmaster,
+                    project_root=Path(".")
                 )
             
-            # Инициализация агентов
+            # Инициализация агентов (без TaskMaster)
             self.task_agent = TaskAgent(
                 config=self.agent_config,
-                task_master=self.task_master
+                task_master=None
             )
             
             self.subtask_agent = SubtaskAgent(
                 config=self.agent_config,
-                task_master=self.task_master,
+                task_master=None,
                 ssh_connector=self.ssh_connector
             )
             
@@ -201,7 +206,7 @@ class SSHAgent:
             self.execution_model = ExecutionModel(
                 config=self.agent_config,
                 ssh_connector=self.ssh_connector,
-                task_master=self.task_master
+                task_master=None
             )
             
             # Инициализация обработчика ошибок
@@ -356,7 +361,7 @@ class SSHAgent:
             execution_duration = time.time() - execution_start_time
             
             # Обработка завершения задачи
-            final_report = self.error_handler.handle_task_completion(task, {
+            final_report = await self.error_handler.handle_task_completion(task, {
                 "step_results": step_results,
                 "execution_duration": execution_duration,
                 "dry_run": dry_run
@@ -368,6 +373,14 @@ class SSHAgent:
             # Сохранение в историю
             self.execution_history.append(self.current_execution_state)
             
+            # Определяем причину неудачи
+            error_message = None
+            if not self.current_execution_state.is_completed():
+                if self.current_execution_state.failed_steps > 0:
+                    error_message = f"Выполнено {self.current_execution_state.completed_steps} из {self.current_execution_state.total_steps} шагов. {self.current_execution_state.failed_steps} шагов завершились с ошибками."
+                else:
+                    error_message = f"Выполнено {self.current_execution_state.completed_steps} из {self.current_execution_state.total_steps} шагов."
+            
             result = {
                 "success": self.current_execution_state.is_completed(),
                 "task_id": task.task_id,
@@ -378,7 +391,8 @@ class SSHAgent:
                 "progress_percentage": self.current_execution_state.get_progress_percentage(),
                 "step_results": step_results,
                 "final_report": final_report.to_dict() if final_report else None,
-                "dry_run": dry_run
+                "dry_run": dry_run,
+                "error": error_message
             }
             
             if result["success"]:
@@ -430,6 +444,7 @@ class SSHAgent:
                 subtask=subtasks[0] if subtasks else None,  # Берем первую подзадачу как основную
                 ssh_connection=self.ssh_connector,
                 server_info=self.server_config.get_server_info(),
+                environment={},
                 step_id=step.step_id,
                 task_id=step.metadata.get("task_id"),
                 dry_run=dry_run
@@ -441,7 +456,7 @@ class SSHAgent:
             
             for subtask in subtasks:
                 execution_context.subtask = subtask
-                subtask_result = self.execution_model.execute_subtask(execution_context)
+                subtask_result = await self.execution_model.execute_subtask(execution_context)
                 subtask_results.append(subtask_result.to_dict())
                 
                 if not subtask_result.success:
@@ -482,6 +497,15 @@ class SSHAgent:
             step_duration = time.time() - step_start_time
             error_msg = f"Ошибка выполнения шага: {str(e)}"
             self.logger.error("Ошибка выполнения шага", step_id=step.step_id, error=error_msg, duration=step_duration)
+            
+            # Выводим детали ошибки в консоль
+            print(f"\n❌ ОШИБКА ВЫПОЛНЕНИЯ ШАГА '{step.title}':")
+            print(f"   ID шага: {step.step_id}")
+            print(f"   Тип ошибки: {type(e).__name__}")
+            print(f"   Сообщение: {str(e)}")
+            print(f"   Время выполнения: {step_duration:.2f}с")
+            print(f"   Подзадач: {len(subtasks)}")
+            print()
             
             return {
                 "success": False,

@@ -239,6 +239,10 @@ class CommandValidator:
     
     def _is_command_allowed(self, command: str) -> bool:
         """Проверка, разрешена ли команда"""
+        # Проверяем, что command является строкой
+        if not isinstance(command, str):
+            return False
+            
         for allowed in self.allowed_commands:
             if command.startswith(allowed.lower()):
                 return True

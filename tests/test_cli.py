@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock
 # Добавляем путь к модулю
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from cli import app, get_agent, current_config
+from src.cli import app, get_agent, current_config
 
 
 class TestCLI:

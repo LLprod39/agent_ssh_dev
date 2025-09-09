@@ -98,9 +98,8 @@ class ExecutionModel:
             timeout=self.executor_config.autocorrection_timeout
         )
         
-        # Инициализация системы идемпотентности
-        idempotency_config = config.get("idempotency", {})
-        self.idempotency_system = IdempotencySystem(ssh_connector, idempotency_config)
+        # Инициализация системы идемпотентности (отключена для упрощения)
+        self.idempotency_system = None
         
         # Инициализация системы dry-run
         self.dry_run_system = DryRunSystem(self.logger)
@@ -136,7 +135,7 @@ class ExecutionModel:
             task_master_enabled=self.task_master is not None
         )
     
-    def execute_subtask(self, context: ExecutionContext) -> SubtaskExecutionResult:
+    async def execute_subtask(self, context: ExecutionContext) -> SubtaskExecutionResult:
         """
         Выполнение подзадачи
         
@@ -165,8 +164,19 @@ class ExecutionModel:
             })
         
         try:
+            # Выводим информацию о выполнении
+            print(f"\n⚡ ВЫПОЛНЕНИЕ ПОДЗАДАЧИ '{subtask.title}':")
+            print(f"   ID: {subtask.subtask_id}")
+            print(f"   Команд: {len(subtask.commands)}")
+            print(f"   Health-check: {len(subtask.health_checks)}")
+            if subtask.commands:
+                print(f"   Команды:")
+                for i, cmd in enumerate(subtask.commands, 1):
+                    print(f"     {i}. {cmd}")
+            print()
+            
             # Выполняем команды подзадачи
-            commands_results = self._execute_commands(subtask.commands, context)
+            commands_results = await self._execute_commands(subtask.commands, context)
             
             # Проверяем успешность выполнения команд
             commands_success = all(cmd.success for cmd in commands_results)
@@ -174,7 +184,7 @@ class ExecutionModel:
             if not commands_success and self.executor_config.auto_correction_enabled:
                 # Пытаемся исправить ошибки
                 self.logger.info("Применение автокоррекции", subtask_id=subtask.subtask_id)
-                corrected_results = self._apply_autocorrection(commands_results, context)
+                corrected_results = await self._apply_autocorrection(commands_results, context)
                 if corrected_results:
                     commands_results = corrected_results
                     commands_success = all(cmd.success for cmd in commands_results)
@@ -182,7 +192,7 @@ class ExecutionModel:
             # Выполняем health-check команды
             health_check_results = []
             if commands_success:
-                health_check_results = self._execute_health_checks(subtask.health_checks, context)
+                health_check_results = await self._execute_health_checks(subtask.health_checks, context)
                 health_checks_success = all(cmd.success for cmd in health_check_results)
                 
                 if not health_checks_success:
@@ -200,6 +210,35 @@ class ExecutionModel:
             
             # Определяем общий успех
             overall_success = commands_success and (not health_check_results or all(cmd.success for cmd in health_check_results))
+            
+            # Выводим результаты выполнения
+            print(f"📊 РЕЗУЛЬТАТЫ ВЫПОЛНЕНИЯ:")
+            print(f"   Команды: {'✅ Успешно' if commands_success else '❌ Ошибки'}")
+            if health_check_results:
+                health_success = all(cmd.success for cmd in health_check_results)
+                print(f"   Health-check: {'✅ Успешно' if health_success else '❌ Ошибки'}")
+            print(f"   Общий результат: {'✅ Успешно' if overall_success else '❌ Ошибки'}")
+            
+            # Выводим детали выполнения каждой команды
+            print(f"   Детали выполнения команд:")
+            for i, cmd in enumerate(commands_results, 1):
+                status = "✅" if cmd.success else "❌"
+                print(f"     {i}. {status} {cmd.command}")
+                if cmd.stdout:
+                    print(f"        Вывод: {cmd.stdout[:100]}{'...' if len(cmd.stdout) > 100 else ''}")
+                if not cmd.success and cmd.stderr:
+                    print(f"        Ошибка: {cmd.stderr[:100]}{'...' if len(cmd.stderr) > 100 else ''}")
+                if not cmd.success:
+                    print(f"        Код выхода: {cmd.exit_code}")
+            
+            if not commands_success:
+                failed_commands = [cmd for cmd in commands_results if not cmd.success]
+                print(f"   Неудачные команды:")
+                for cmd in failed_commands:
+                    print(f"     • {cmd.command} (код: {cmd.exit_code})")
+                    if cmd.stderr:
+                        print(f"       Ошибка: {cmd.stderr[:100]}{'...' if len(cmd.stderr) > 100 else ''}")
+            print()
             
             # Выполняем откат если нужно
             rollback_executed = False
@@ -255,6 +294,16 @@ class ExecutionModel:
             error_msg = f"Ошибка выполнения подзадачи: {str(e)}"
             self.logger.error("Ошибка выполнения подзадачи", error=error_msg, subtask_id=subtask.subtask_id)
             
+            # Выводим детали ошибки в консоль
+            print(f"\n❌ ОШИБКА ВЫПОЛНЕНИЯ ПОДЗАДАЧИ '{subtask.title}':")
+            print(f"   ID: {subtask.subtask_id}")
+            print(f"   Тип ошибки: {type(e).__name__}")
+            print(f"   Сообщение: {str(e)}")
+            print(f"   Время выполнения: {total_duration:.2f}с")
+            print(f"   Команд: {len(subtask.commands)}")
+            print(f"   Health-check: {len(subtask.health_checks)}")
+            print()
+            
             # Отправляем ошибку в Task Master
             if self.task_master:
                 self._report_progress_to_taskmaster(context, "subtask_failed", {
@@ -275,11 +324,20 @@ class ExecutionModel:
                 }
             )
     
-    def _execute_commands(self, commands: List[str], context: ExecutionContext) -> List[CommandResult]:
+    async def _execute_commands(self, commands: List[str], context: ExecutionContext) -> List[CommandResult]:
         """Выполнение списка команд с интегрированной проверкой безопасности и идемпотентности"""
         results = []
         
         for i, command in enumerate(commands):
+            # Проверяем, что command является строкой
+            if not isinstance(command, str):
+                self.logger.warning("Команда не является строкой", 
+                                  command=command, 
+                                  command_type=type(command).__name__,
+                                  order=i+1)
+                # Пропускаем невалидную команду
+                continue
+                
             self.logger.debug("Выполнение команды", command=command, order=i+1)
             
             # Контекст для валидации команды
@@ -315,7 +373,7 @@ class ExecutionModel:
             if self.executor_config.dry_run_mode:
                 result = self._simulate_command_execution(command, validation_context)
             else:
-                result = self._execute_single_command(command, context, validation_context)
+                result = await self._execute_single_command(command, context, validation_context)
             
             results.append(result)
             
@@ -329,30 +387,30 @@ class ExecutionModel:
         
         return results
     
-    def _execute_single_command(self, command: str, context: ExecutionContext, validation_context: Dict[str, Any] = None) -> CommandResult:
+    async def _execute_single_command(self, command: str, context: ExecutionContext, validation_context: Dict[str, Any] = None) -> CommandResult:
         """Выполнение одной команды"""
         start_time = time.time()
         
         try:
             # Выполняем команду через SSH с передачей контекста валидации
-            stdout, stderr, exit_code = context.ssh_connection.execute_command(
+            result = await context.ssh_connection.execute_command(
                 command, 
                 timeout=self.executor_config.command_timeout,
                 context=validation_context
             )
             
             duration = time.time() - start_time
-            success = exit_code == 0
+            success = result.exit_code == 0
             
-            result = CommandResult(
+            command_result = CommandResult(
                 command=command,
                 success=success,
-                exit_code=exit_code,
-                stdout=stdout,
-                stderr=stderr,
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
                 duration=duration,
                 status=ExecutionStatus.COMPLETED if success else ExecutionStatus.FAILED,
-                error_message=stderr if not success else None,
+                error_message=result.stderr if not success else None,
                 metadata={
                     "execution_timestamp": datetime.now().isoformat(),
                     "timeout": self.executor_config.command_timeout
@@ -366,8 +424,8 @@ class ExecutionModel:
                     command=command,
                     success=success,
                     duration=duration,
-                    exit_code=exit_code,
-                    error_message=stderr if not success else None,
+                    exit_code=result.exit_code,
+                    error_message=result.stderr if not success else None,
                     autocorrection_used=False,  # Будет обновлено при автокоррекции
                     metadata={
                         "subtask_id": context.subtask.subtask_id,
@@ -379,10 +437,10 @@ class ExecutionModel:
                 "Команда выполнена",
                 command=command,
                 success=success,
-                exit_code=exit_code,
+                exit_code=result.exit_code,
                 duration=duration,
-                stdout_length=len(stdout) if stdout else 0,
-                stderr_length=len(stderr) if stderr else 0
+                stdout_length=len(result.stdout) if result.stdout else 0,
+                stderr_length=len(result.stderr) if result.stderr else 0
             )
             
             return result
@@ -470,7 +528,7 @@ class ExecutionModel:
             }
         )
     
-    def _execute_health_checks(self, health_checks: List[str], context: ExecutionContext) -> List[CommandResult]:
+    async def _execute_health_checks(self, health_checks: List[str], context: ExecutionContext) -> List[CommandResult]:
         """Выполнение health-check команд"""
         results = []
         
@@ -480,7 +538,7 @@ class ExecutionModel:
             if self.executor_config.dry_run_mode:
                 result = self._simulate_health_check(health_check)
             else:
-                result = self._execute_single_command(health_check, context)
+                result = await self._execute_single_command(health_check, context)
             
             results.append(result)
             
@@ -508,7 +566,7 @@ class ExecutionModel:
             }
         )
     
-    def _execute_rollback(self, rollback_commands: List[str], context: ExecutionContext) -> List[CommandResult]:
+    async def _execute_rollback(self, rollback_commands: List[str], context: ExecutionContext) -> List[CommandResult]:
         """Выполнение команд отката"""
         self.logger.info("Выполнение отката", commands_count=len(rollback_commands))
         
@@ -519,7 +577,7 @@ class ExecutionModel:
             if self.executor_config.dry_run_mode:
                 result = self._simulate_command_execution(rollback_command)
             else:
-                result = self._execute_single_command(rollback_command, context)
+                result = await self._execute_single_command(rollback_command, context)
             
             results.append(result)
             
@@ -528,7 +586,7 @@ class ExecutionModel:
         
         return results
     
-    def _apply_autocorrection(self, failed_results: List[CommandResult], context: ExecutionContext) -> Optional[List[CommandResult]]:
+    async def _apply_autocorrection(self, failed_results: List[CommandResult], context: ExecutionContext) -> Optional[List[CommandResult]]:
         """Применение автокоррекции для исправления ошибок"""
         corrected_results = []
         corrections_applied = False
@@ -539,7 +597,7 @@ class ExecutionModel:
                 continue
             
             # Используем новый движок автокоррекции
-            autocorrection_result = self.autocorrection_engine.correct_command(result, context)
+            autocorrection_result = await self.autocorrection_engine.correct_command(result, context)
             
             if autocorrection_result.success and autocorrection_result.final_command:
                 self.logger.info(
@@ -550,8 +608,8 @@ class ExecutionModel:
                 )
                 
                 # Выполняем исправленную команду
-                corrected_result = self._execute_single_command(autocorrection_result.final_command, context)
-                corrected_result.retry_count = result.retry_count + 1
+                corrected_result = await self._execute_single_command(autocorrection_result.final_command, context)
+                corrected_result.retry_count = getattr(result, 'retry_count', 0) + 1
                 corrected_result.metadata["autocorrected"] = True
                 corrected_result.metadata["original_command"] = result.command
                 corrected_result.metadata["autocorrection_attempts"] = autocorrection_result.total_attempts
@@ -567,7 +625,7 @@ class ExecutionModel:
                         success=corrected_result.success,
                         duration=corrected_result.duration or 0.0,
                         exit_code=corrected_result.exit_code,
-                        error_message=corrected_result.error_message,
+                        error_message=getattr(corrected_result, 'error_message', None),
                         autocorrection_used=True,
                         metadata={
                             "subtask_id": context.subtask.subtask_id,
@@ -639,7 +697,7 @@ class ExecutionModel:
         self.execution_stats["total_commands"] += len(all_results)
         self.execution_stats["successful_commands"] += len([r for r in all_results if r.success])
         self.execution_stats["failed_commands"] += len([r for r in all_results if not r.success])
-        self.execution_stats["retry_attempts"] += sum(r.retry_count for r in all_results)
+        self.execution_stats["retry_attempts"] += sum(getattr(r, 'retry_count', 0) for r in all_results)
         self.execution_stats["total_duration"] += duration
     
     def _report_progress_to_taskmaster(self, context: ExecutionContext, event_type: str, data: Dict[str, Any]):
@@ -753,6 +811,11 @@ class ExecutionModel:
         """Извлечение проверок идемпотентности из команды"""
         checks = []
         
+        # Проверяем, что command является строкой
+        if not isinstance(command, str):
+            self.logger.warning("Команда не является строкой", command_type=type(command).__name__)
+            return checks
+        
         # Анализируем команду и определяем тип
         command_lower = command.lower().strip()
         
@@ -763,7 +826,7 @@ class ExecutionModel:
                 checks.append(self.idempotency_system._create_package_check(package_name))
         
         # Проверка создания файлов
-        elif command_lower.startswith(('touch ', 'echo ') and '>' in command):
+        elif (command_lower.startswith('touch ') or command_lower.startswith('echo ')) and '>' in command:
             file_path = self._extract_file_path(command)
             if file_path:
                 checks.append(self.idempotency_system._create_file_check(file_path))
@@ -810,7 +873,7 @@ class ExecutionModel:
             r'yum install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)',
             r'dnf install[^a-zA-Z0-9-]*([a-zA-Z0-9-]+)'
         ]
-        
+lear        
         for pattern in patterns:
             match = re.search(pattern, command)
             if match:

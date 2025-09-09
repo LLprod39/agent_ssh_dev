@@ -152,7 +152,19 @@ class TaskAgent:
             # Валидируем план
             validation_result = self._validate_plan(task)
             if not validation_result["valid"]:
-                self.logger.warning("План не прошел валидацию", issues=validation_result["issues"])
+                self.logger.warning("План не прошел валидацию", 
+                                  issues=validation_result["issues"],
+                                  steps_count=validation_result["steps_count"],
+                                  dependencies_count=validation_result["dependencies_count"])
+                
+                # Выводим детали валидации в консоль
+                print(f"\n❌ ПЛАН НЕ ПРОШЕЛ ВАЛИДАЦИЮ:")
+                print(f"   Шагов: {validation_result['steps_count']}")
+                print(f"   Зависимостей: {validation_result['dependencies_count']}")
+                print(f"   Проблемы:")
+                for issue in validation_result["issues"]:
+                    print(f"     • {issue}")
+                print()
                 # Можно попробовать исправить или вернуть с предупреждением
             
             # Оптимизируем план
@@ -166,6 +178,18 @@ class TaskAgent:
                 steps_count=len(task.steps),
                 duration=planning_duration
             )
+            
+            # Выводим информацию о созданном плане
+            print(f"\n📋 СОЗДАН ПЛАН ЗАДАЧИ:")
+            print(f"   ID задачи: {task.task_id}")
+            print(f"   Шагов: {len(task.steps)}")
+            print(f"   Время планирования: {planning_duration:.2f}с")
+            print(f"   Шаги:")
+            for i, step in enumerate(task.steps, 1):
+                print(f"     {i}. {step.title}")
+                if step.description:
+                    print(f"        {step.description}")
+            print()
             
             return PlanningResult(
                 success=True,
@@ -211,7 +235,7 @@ class TaskAgent:
             "ТРЕБОВАНИЯ К ПЛАНИРОВАНИЮ:",
             "1. Разбей задачу на 3-10 логических шагов",
             "2. Каждый шаг должен быть конкретным и выполнимым",
-            "3. Укажи зависимости между шагами",
+            "3. Укажи зависимости между шагами по ИНДЕКСАМ (0, 1, 2, ...), а не по названиям",
             "4. Оцени время выполнения каждого шага в минутах",
             "5. Присвой приоритет каждому шагу (low, medium, high, critical)",
             "6. Шаги должны быть идемпотентными (безопасно выполнять повторно)",
@@ -224,7 +248,7 @@ class TaskAgent:
             '      "description": "Подробное описание шага",',
             '      "priority": "high",',
             '      "estimated_duration": 15,',
-            '      "dependencies": []',
+            '      "dependencies": [0, 1]',
             '    }',
             '  ]',
             "}",
@@ -323,23 +347,54 @@ class TaskAgent:
             steps = []
             for i, step_data in enumerate(steps_data):
                 try:
-                    step = TaskStep(
-                        title=step_data.get("title", f"Шаг {i+1}"),
-                        description=step_data.get("description", ""),
-                        priority=Priority(step_data.get("priority", "medium")),
-                        estimated_duration=step_data.get("estimated_duration"),
-                        dependencies=step_data.get("dependencies", []),
-                        metadata={
-                            "task_id": task_id,
-                            "step_order": i + 1,
-                            "llm_generated": True
-                        }
-                    )
-                    steps.append(step)
+                    # Преобразуем зависимости из индексов в ID шагов
+                    dependencies = step_data.get("dependencies", [])
+                    if dependencies:
+                        # Сначала создаем все шаги без зависимостей
+                        step = TaskStep(
+                            title=step_data.get("title", f"Шаг {i+1}"),
+                            description=step_data.get("description", ""),
+                            priority=Priority(step_data.get("priority", "medium")),
+                            estimated_duration=step_data.get("estimated_duration"),
+                            dependencies=[],  # Пока пустые зависимости
+                            metadata={
+                                "task_id": task_id,
+                                "step_order": i + 1,
+                                "llm_generated": True
+                            }
+                        )
+                        steps.append(step)
+                    else:
+                        step = TaskStep(
+                            title=step_data.get("title", f"Шаг {i+1}"),
+                            description=step_data.get("description", ""),
+                            priority=Priority(step_data.get("priority", "medium")),
+                            estimated_duration=step_data.get("estimated_duration"),
+                            dependencies=[],
+                            metadata={
+                                "task_id": task_id,
+                                "step_order": i + 1,
+                                "llm_generated": True
+                            }
+                        )
+                        steps.append(step)
                     
                 except Exception as e:
                     self.logger.warning(f"Ошибка создания шага {i+1}", error=str(e))
                     continue
+            
+            # Теперь устанавливаем зависимости по индексам
+            for i, step_data in enumerate(steps_data):
+                dependencies = step_data.get("dependencies", [])
+                if dependencies and i < len(steps):
+                    # Преобразуем индексы в ID шагов
+                    step_dependencies = []
+                    for dep_index in dependencies:
+                        if isinstance(dep_index, int) and 0 <= dep_index < len(steps):
+                            step_dependencies.append(steps[dep_index].step_id)
+                        else:
+                            self.logger.warning(f"Некорректный индекс зависимости: {dep_index}")
+                    steps[i].dependencies = step_dependencies
             
             self.logger.info(f"Создано {len(steps)} шагов из ответа LLM")
             return steps

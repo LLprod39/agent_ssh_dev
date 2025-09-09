@@ -310,14 +310,10 @@ class GeminiInterface(LLMInterface):
                 max_tokens=request.max_tokens
             )
             
-            # Выполняем запрос через новый API
+            # Выполняем запрос через новый API (простой подход)
             response = self.client.models.generate_content(
                 model=request.model,
-                contents=full_prompt,
-                config={
-                    "temperature": request.temperature,
-                    "max_output_tokens": request.max_tokens,
-                }
+                contents=full_prompt
             )
             
             duration = time.time() - start_time
@@ -357,7 +353,19 @@ class GeminiInterface(LLMInterface):
         except Exception as e:
             duration = time.time() - start_time
             error_msg = f"Ошибка при запросе к Gemini: {str(e)}"
-            self.logger.error("Ошибка при запросе к Gemini", error=error_msg, duration=duration)
+            self.logger.error("Ошибка при запросе к Gemini", 
+                            error=error_msg, 
+                            duration=duration,
+                            exception_type=type(e).__name__,
+                            prompt_preview=request.prompt[:200] if request.prompt else "None")
+            
+            # Выводим детали ошибки в консоль
+            print(f"\n❌ ОШИБКА GEMINI API:")
+            print(f"   Тип ошибки: {type(e).__name__}")
+            print(f"   Сообщение: {str(e)}")
+            print(f"   Время выполнения: {duration:.2f}с")
+            print(f"   Промпт (первые 200 символов): {request.prompt[:200] if request.prompt else 'None'}")
+            print()
             
             return LLMResponse(
                 success=False,
@@ -375,8 +383,7 @@ class GeminiInterface(LLMInterface):
             # Простая проверка доступности через новый API
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents="test",
-                config={"max_output_tokens": 1}
+                contents="test"
             )
             return response.text is not None
             

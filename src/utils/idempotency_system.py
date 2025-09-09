@@ -102,9 +102,9 @@ class IdempotencySystem:
         self.logger = StructuredLogger("IdempotencySystem")
         
         # Инициализируем компоненты
-        self.health_checker = HealthChecker(config.get("health_checker", {}))
-        self.command_generator = LinuxCommandGenerator(config.get("command_generator", {}))
-        self.command_validator = CommandValidator(config.get("validator", {}))
+        self.health_checker = HealthChecker({})
+        self.command_generator = LinuxCommandGenerator({})
+        self.command_validator = CommandValidator({})
         
         # Хранилище снимков состояния
         self.state_snapshots: Dict[str, StateSnapshot] = {}
@@ -112,7 +112,7 @@ class IdempotencySystem:
         
         # Кэш проверок
         self.check_cache: Dict[str, IdempotencyResult] = {}
-        self.cache_ttl = config.get("cache_ttl", 300)  # 5 минут
+        self.cache_ttl = getattr(config, 'cache_ttl', 300)  # 5 минут
         
         self.logger.info("Система идемпотентности инициализирована")
     
@@ -319,7 +319,7 @@ class IdempotencySystem:
         
         return rollback_commands
     
-    def execute_rollback(self, snapshot_id: str) -> List[CommandResult]:
+    async def execute_rollback(self, snapshot_id: str) -> List[CommandResult]:
         """
         Выполнение отката к состоянию снимка
         
@@ -338,7 +338,7 @@ class IdempotencySystem:
         results = []
         for command in rollback_commands:
             try:
-                result = self.ssh_connector.execute_command(command)
+                result = await self.ssh_connector.execute_command(command)
                 results.append(result)
                 
                 if result.success:
@@ -461,10 +461,10 @@ class IdempotencySystem:
             description=f"Пользовательская проверка для {target}"
         )
     
-    def _execute_check(self, check: IdempotencyCheck) -> IdempotencyResult:
+    async def _execute_check(self, check: IdempotencyCheck) -> IdempotencyResult:
         """Выполнение отдельной проверки"""
         try:
-            result = self.ssh_connector.execute_command(check.check_command)
+            result = await self.ssh_connector.execute_command(check.check_command)
             
             # Проверяем успешность по exit code
             success = result.exit_code == 0
@@ -490,23 +490,23 @@ class IdempotencySystem:
                 error_message=str(e)
             )
     
-    def _collect_system_info(self) -> Dict[str, Any]:
+    async def _collect_system_info(self) -> Dict[str, Any]:
         """Сбор информации о системе"""
         system_info = {}
         
         try:
             # Информация о системе
-            result = self.ssh_connector.execute_command("uname -a")
+            result = await self.ssh_connector.execute_command("uname -a")
             if result.success:
                 system_info["uname"] = result.stdout.strip()
             
             # Информация о дисках
-            result = self.ssh_connector.execute_command("df -h")
+            result = await self.ssh_connector.execute_command("df -h")
             if result.success:
                 system_info["disk_usage"] = result.stdout.strip()
             
             # Информация о памяти
-            result = self.ssh_connector.execute_command("free -h")
+            result = await self.ssh_connector.execute_command("free -h")
             if result.success:
                 system_info["memory"] = result.stdout.strip()
             

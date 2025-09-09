@@ -11,9 +11,9 @@ from pathlib import Path
 # Добавляем путь к src
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from config.agent_config import LLMConfig
-from models.llm_interface import GeminiInterface, LLMRequest, LLMResponse, GEMINI_AVAILABLE
-from utils.logger import StructuredLogger
+from src.config.agent_config import LLMConfig
+from src.models.llm_interface import GeminiInterface, LLMRequest, LLMResponse, GEMINI_AVAILABLE
+from src.utils.logger import StructuredLogger
 
 
 class TestGeminiInterface:

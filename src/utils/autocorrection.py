@@ -147,7 +147,7 @@ class AutocorrectionEngine:
             strategies_count=len(CorrectionStrategy)
         )
     
-    def correct_command(self, command_result: CommandResult, context: ExecutionContext) -> AutocorrectionResult:
+    async def correct_command(self, command_result: CommandResult, context: ExecutionContext) -> AutocorrectionResult:
         """
         Основной метод исправления команды
         
@@ -159,7 +159,7 @@ class AutocorrectionEngine:
             Результат автокоррекции
         """
         original_command = command_result.command
-        error_message = command_result.error_message or command_result.stderr or ""
+        error_message = getattr(command_result, 'error_message', None) or command_result.stderr or ""
         
         self.logger.info(
             "Начало автокоррекции команды",
@@ -194,14 +194,14 @@ class AutocorrectionEngine:
                 break
             
             # Тестируем исправленную команду
-            test_result = self._test_corrected_command(corrected_command, context)
+            test_result = await self._test_corrected_command(corrected_command, context)
             
             attempt = CorrectionAttempt(
                 original_command=current_command,
                 corrected_command=corrected_command,
                 strategy=strategy,
                 success=test_result.success,
-                error_message=test_result.error_message,
+                error_message=getattr(test_result, 'error_message', None),
                 metadata={
                     "attempt_number": attempt_num,
                     "test_result": test_result.to_dict() if hasattr(test_result, 'to_dict') else str(test_result)
@@ -228,7 +228,7 @@ class AutocorrectionEngine:
             
             # Обновляем команду и сообщение об ошибке для следующей попытки
             current_command = corrected_command
-            error_message = test_result.error_message or test_result.stderr or ""
+            error_message = getattr(test_result, 'error_message', None) or test_result.stderr or ""
         
         self.logger.warning(
             "Автокоррекция не удалась",
@@ -369,6 +369,11 @@ class AutocorrectionEngine:
     
     def _fix_permission_issues(self, command: str, error_message: str) -> Optional[str]:
         """Исправление проблем с правами доступа"""
+        # Проверяем, что command является строкой
+        if not isinstance(command, str):
+            self.logger.warning(f"Команда не является строкой в _fix_permission_issues: {type(command)} = {command}")
+            return None
+            
         if command.startswith("sudo "):
             return None
         
@@ -401,7 +406,7 @@ class AutocorrectionEngine:
             return f"sudo {command}"
         
         # Исправляем относительные пути
-        if "./" in command and not command.startswith("./"):
+        if isinstance(command, str) and "./" in command and not command.startswith("./"):
             return command.replace("./", "/")
         
         return None
@@ -423,24 +428,24 @@ class AutocorrectionEngine:
         except OSError:
             return False
     
-    def _test_corrected_command(self, command: str, context: ExecutionContext) -> CommandResult:
+    async def _test_corrected_command(self, command: str, context: ExecutionContext) -> CommandResult:
         """Тестирование исправленной команды"""
         try:
             # Выполняем команду в dry-run режиме или с ограниченным таймаутом
-            stdout, stderr, exit_code = context.ssh_connection.execute_command(
+            result = await context.ssh_connection.execute_command(
                 command, 
                 timeout=10  # Короткий таймаут для тестирования
             )
             
             return CommandResult(
                 command=command,
-                success=exit_code == 0,
-                exit_code=exit_code,
-                stdout=stdout,
-                stderr=stderr,
+                success=result.exit_code == 0,
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+                stderr=result.stderr,
                 duration=0.1,  # Примерное время
-                status=ExecutionStatus.COMPLETED if exit_code == 0 else ExecutionStatus.FAILED,
-                error_message=stderr if exit_code != 0 else None
+                status=ExecutionStatus.COMPLETED if result.exit_code == 0 else ExecutionStatus.FAILED,
+                error_message=result.stderr if result.exit_code != 0 else None
             )
             
         except Exception as e:

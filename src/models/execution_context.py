@@ -15,7 +15,10 @@ class ExecutionContext:
     subtask: Subtask
     ssh_connection: Any  # SSHConnector или мок объект
     server_info: Dict[str, Any]
-    environment: Dict[str, Any]
+    environment: Dict[str, Any] = None
     progress_callback: Optional[Callable] = None
     task_master: Optional[TaskMasterIntegration] = None
+    step_id: Optional[str] = None
+    task_id: Optional[str] = None
+    dry_run: bool = False
 
